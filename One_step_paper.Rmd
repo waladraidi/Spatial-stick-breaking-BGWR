@@ -1,5 +1,5 @@
 ---
-title: ASpatial non-parametric Bayesian clustered regression coefficients
+title: Spatial non-parametric Bayesian clustered regression coefficients
 output:
   html_document:
     highlight: pygments
@@ -33,7 +33,7 @@ library(sf)
 library(dplyr)
 library(geosphere)
 library(ggpubr)
-library(rjags)
+
 distMat <- readRDS("./GAcentroidgcd.rds")
 centroids <- as.data.frame(readRDS("GAcentroids.rds"))
 dd <- distMat
@@ -110,13 +110,14 @@ Mu <- apply(cbind(X) * Beta.true, 1, sum)
 #Creat the data
 Y <- rnorm(n, Mu, Sig.true) 
 
+#Converts the 'x' and 'y' values from the 'centroids' to radians 
 centroids <- centroids
 cons = centroids$x * pi/180
 const= centroids$y * pi/180
 
 new_cen<- data.frame(cons,const)
 ```
-The this chunk, the distance matrix and centroid coordinates from external files. It sets a deterministic seed for reproducibility and assigns data points to one of three clusters based on the conditions defined by the centroid coordinates. The data is then processed to generate beta values specific to each cluster. Using the distance matrix, it creates six different Gaussian-kernel weighted functions. These functions, combined with the beta values, produce six coefficients for each data point. By generating multiple covariates based on a given range parameter, the code ultimately constructs a dataset $Y$ from GWR model where each data point is drawn from a normal distribution with a mean determined by these coefficients and covariates. The code then transforms the centroid coordinates to radians, preparing them for potential geospatial analysis.
+In this chunk, the distance matrix and centroid coordinates obtained from external files. We sets a deterministic seed for reproducibility and assigns data points to one of three clusters based on the conditions defined by the centroid coordinates. The data is then processed to generate beta values specific to each cluster. Using the distance matrix, it creates six different kernel weighted functions. These functions, combined with the beta values, produce six coefficients for each data point. By generating multiple covariates based on a given range parameter, the code ultimately constructs a dataset $Y$ from GWR model where each data point is drawn from a normal distribution with a mean determined by these coefficients and covariates. The code then transforms the centroid coordinates to radians, preparing them for potential the analysis.
 
 
 ```{r 2,class.source = c("numCode", "r", "numberLines"),warning=FALSE,message=FALSE}
@@ -129,8 +130,7 @@ dnorm_vec2 <- nimbleFunction(
   })
 registerDistributions('dnorm_vec2')
 
-# Define the GWRCode for the nimble model
-# Define the GWRCode for the nimble model
+# Define the Code for the nimble model
 GWRCode <- nimbleCode({
   for (i in 1:S) {
     y[1:N, i] ~ dnorm_vec2(b[i, 1] * x1[1:N] + b[i, 2] * x2[1:N] + b[i, 3] *
@@ -141,26 +141,17 @@ GWRCode <- nimbleCode({
     
     
     b[i, 1:6] <- bm[latent[i], 1:6]
-     #bm[i, 1:6] ~ dmnorm(mu[ 1:6,latent[i]], Tau[1:6, 1:6,latent[i]])
+     bm[i, 1:6] ~ dmnorm(mu[ 1:6,latent[i]], Tau[1:6, 1:6,latent[i]])
     latent[i] ~ dcat(pi[i,1:M])}
   # 
-  # for (m in 1:M) {
-  #   mu[ 1:6,m] ~ dmnorm(mu0[1:6], Tau[1:6,1:6,m])
-  #   Tau[1:6,1:6,m] ~ dwish(D1[1:6,1:6 ], c)
-  #   Sigma[ 1:6,1:6,m] <- inverse(Tau[1:6,1:6,m])
-  #   
-  #   # for (j in 1:6) {
-  #   #   mu0[j] ~ dnorm(0, 1)
-  #   # }
-  # }
-  for (k in 1:M) {
-    bm[k, 1:6] ~ dmnorm(mu_bm[1:6], cov = var_bm[1:6, 1:6])
-  }
-  var_bm[1:6, 1:6] <- 1/tau_bm * diag(rep(1, 6))
-  tau_bm ~ dgamma(1, 1)
-  
-  for (j in 1:6) {
-    mu_bm[j] ~ dnorm(0, 1)
+  for (m in 1:M) {
+    mu[ 1:6,m] ~ dmnorm(mu0[1:6], Tau[1:6,1:6,m])
+    Tau[1:6,1:6,m] ~ dwish(D1[1:6,1:6 ], c)
+    Sigma[ 1:6,1:6,m] <- inverse(Tau[1:6,1:6,m])
+
+    for (j in 1:6) {
+      mu0[j] ~ dnorm(0, 1)
+    }
   }
   
   
@@ -171,12 +162,11 @@ GWRCode <- nimbleCode({
   
   
   for(j in 1 : (M - 1)){
-    V[j] ~ dbeta(1, 100)
+    V[j] ~ dbeta(av, bv)
     
     for (i in 1:S) {
       #
-      weight[i,j]<- exp(-((coordsnew[i, 1] - knot[j, 1])^2)/r[j,1]^2) * exp(-((coordsnew[i, 2]- knot[j, 2])^2)/r[j,2]^2)
-      
+      weight[i,j]<- exp(-((new_cen[i, 1] - knot[j, 1])^2)/r[j,1]^2) * exp(-((new_cen[i, 2]- knot[j, 2])^2)/r[j,2]^2)
       
       vs[i,j]<- weight[i,j]*V[j] 
       vsout[i,j]<- 1-vs[i,j]
@@ -190,32 +180,34 @@ GWRCode <- nimbleCode({
   
   for (k in 1:S){vs[k,M]<- 1}
   
-#av ~dgamma(1,1)
- #bv ~ dgamma(10,10)
-  h~dunif(40,50)
-  
-  
+ av ~dgamma(1,1)
+ bv ~ dgamma(1,1)
+ lambda~dunif(0,D) 
+   h~dunif(0,5)
 })
 
 
 ```
 ## Data List for Model
-The next step involves defining the data list for the aforementioned model code. This data list includes the response variable, the covariates, and the distance matrix.  the distance matrix is provided in the folder "./GAcentroidgcd.rds" as well as the centroids "GAcentroids.rds" . It is important to note that the entries in this matrix have been normalized to ensure a maximum value of 10.
+The next step involves defining the data list for the aforementioned model code. This data list includes the response variable, the covariates, and the distance matrix . It is important to note that the entries in this matrix have been normalized to ensure a maximum value of 10.
 
  
 ```{r 3,class.source = c("numCode", "r", "numberLines"),warning=FALSE,message=FALSE}
-p<- 6
+p<- 6   
 
+
+##Replicate Y to get a square matrix
 Y <-  matrix(Y, nrow = length(Y), ncol = length(Y), byrow = FALSE)
 # Prepare the data, constants, and initial values for the nimble model
 GWRdata <- list(y = Y, x1 = X[, 1], x2 = X[, 2], x3 = X[, 3], x4 = X[, 4],
-                x5 = X[, 5], x6 = X[, 6], Dist = distMat,D1=diag(rep(1, p)),c = p + 1,coordsnew=centroids,new_cen=new_cen)
+                x5 = X[, 5], x6 = X[, 6], Dist = distMat,D1=diag(rep(1, p)),c = p + 1,
+                new_cen=new_cen)
 
-GWRConsts <- list(S = 159, M = 10, N = 159, D = 100)
+GWRConsts <- list(S = 159, M = 10, N = 159, D = 50)
 
 dim_tau <- c(6, 6, GWRConsts$M)
 
-# Create the array with all elements set to 0.1
+# Create the array with all elements set to 1
 Tau <- array(1, dim = dim_tau)
 
 # Set the diagonal elements to 1
@@ -224,16 +216,10 @@ for (i in 1:dim_tau[3]) {
 }
 
 GWRInits <- list( psi_y = rep(100, GWRConsts$S), lambda = 10, 
-                  sigmainv = 1,mu0 = rep(0,6),
-                  latent = rep(1, GWRConsts $S), alpha = 1,
-                  tau_bm = 1,Tau=Tau,knot = matrix(runif((GWRConsts$M-1)*2,0, 10), GWRConsts$M-1, 2),
-                  mu_bm = rnorm(6),
-                  phi = 1,av = rgamma(1, 1, 1),
-                  tau_w = 1,bv = rgamma(1, 10, 10)
-                  ,h=42,
-                  V = rbeta(GWRConsts$M - 1, 1, 1),
-                  vlatent = rbeta(GWRConsts$M - 1, 1, 1))
-
+                  mu0 = rep(0,6),latent = rep(1, GWRConsts $S), 
+                  Tau=Tau,knot = matrix(runif((GWRConsts$M-1)*2,0, 1), GWRConsts$M-1, 2),
+                 av = rgamma(1, 1, 1),bv = rgamma(1, 1, 1)
+                  ,h=1,V = rbeta(GWRConsts$M - 1, 1, 1))
 
 
 ```
@@ -252,20 +238,21 @@ In essence, the code captures spatially varying relationships in data using a Ba
 ```{r 4,class.source = c("numCode", "r", "numberLines"),warning=FALSE,message=FALSE}
 # Perform MCMC sampling using nimble
 mcmc.out_Spatial <- nimbleMCMC(code = GWRCode, data = GWRdata, constants = GWRConsts,
-                               inits = GWRInits, monitors = c("b","lambda","latent","psi_y","pi"), niter = 5000, nburnin = 2000, 
-                               nchains = 1, setSeed = TRUE,summary = TRUE,WAIC = TRUE)
+                               inits = GWRInits, monitors = c("latent","pi"),
+                               niter = 5000, nburnin = 2000, 
+                               nchains = 1, setSeed = TRUE,summary = TRUE)
 
 ```
 ## Run the Model
-In R2jags, we can directly run the MCMC engine using the following code. This function is designed to run the Markov Chain Monte Carlo (MCMC) process and typically requires the model code, data, and initial values as input. It offers various options for controlling aspects such as multiple chains, the number of iterations, thinning intervals, and more.
+In Nimble, we can directly run the MCMC engine using the following code. This function is designed to run the Markov Chain Monte Carlo (MCMC) process and typically requires the model code, data, and initial values as input. It offers various options for controlling aspects such as multiple chains, the number of iterations, thinning intervals, and more.
 
-The following code example illustrates the execution of a single MCMC chain with a total of 5000 iterations, where the initial 2000 iterations are used as burn-in. Consequently, the output will provide 3000 posterior samples for the parameters: "bm," "pi", "lambda," "psi_y," and "latent."
+The following code example illustrates the execution of a single MCMC chain with a total of 5000 iterations, where the initial 2000 iterations are used as burn-in. Consequently, the output will provide 3000 posterior samples for the parameters:  "pi", and "latent."
 
 
 
 ## Posterior Convergence Diagnostics and Estimation
 
-The coda package (Plummer et al., 2006) offers convenient tools for performing posterior convergence diagnostics. It also provides useful functions for computing various percentiles of the posterior distribution, which are often of great interest in posterior inference. In the next chunk the code  perform clustering analysis on the posterior samples from the Bayesian model and visualize the resulting cluster assignments on a map of Georgia. The Dahl's method is used for clustering, and the final clusters are plotted on the map using ggplot.
+The coda package (Plummer et al., 2006) offers convenient tools for performing posterior convergence diagnostics. It also provides useful functions for computing various percentiles of the posterior distribution, which are often of great interest in posterior inference. In the next chunk the code  perform clustering analysis on the posterior samples from the Bayesian model and visualize the resulting cluster assignments on a map of Georgia. The Dahl's and mode methods are used for clustering, and the final clusters are plotted on the map using ggplot.
 
 
 ```{r 5,class.source = c("numCode", "r", "numberLines"),warning=FALSE,message=FALSE}
@@ -275,7 +262,7 @@ latentZMat <-mcmc.out$samples
 # Assuming latentZMat is a data frame or matrix
 # and you want to extract columns with names containing "latent"
 latentZMat<- latentZMat[, grepl("latent", colnames(latentZMat))]
-latentZMat
+
 membershipList <- purrr::map(1:nrow(latentZMat), .f = function(x) {
   outer(latentZMat[x,], latentZMat[x, ], "==")
 })
@@ -307,13 +294,6 @@ library(dplyr)
 library(sf)
 Georgia <- read_sf("Georgia_dat.shp") %>% filter(!st_is_empty(.))
 
-finalCluster[finalCluster == 8] <- 1
-finalCluster[finalCluster == 4] <- 2
-finalCluster[finalCluster == 10] <- 3
-
-latentPE[latentPE == 8] <- 1
-latentPE[latentPE == 4] <- 2
-latentPE[latentPE == 10] <- 3
 # Create a new dataset with finalCluster assignments
 mydata_and_myMap <- cbind(Georgia, finalCluster,latentPE,asm)
 
@@ -327,6 +307,8 @@ A<- ggplot() +
   geom_sf(data = mydata_and_myMap, aes(fill = factor(mydata_and_myMap$finalCluster)), color = NA) +
   geom_sf(data = mydata_and_myMap, fill = NA)
 
+A
+
 B<- ggplot() +
   xlab("Longitude") +
   ylab("Latitude") +
@@ -336,23 +318,12 @@ B<- ggplot() +
   geom_sf(data = mydata_and_myMap, aes(fill = factor(mydata_and_myMap$finalCluster)), color = NA) +
   geom_sf(data = mydata_and_myMap, fill = NA)
 
-C<- ggplot() +
-  xlab("Longitude") +
-  ylab("Latitude") +
-  theme_bw() +
-  theme(legend.position = "right") +
-  labs(fill = 'Actual labels ') +
-  geom_sf(data = mydata_and_myMap, aes(fill = factor(mydata_and_myMap$asm)), color = NA) +
-  geom_sf(data = mydata_and_myMap, fill = NA)
 
-
-library(ggpubr)
-ggarrange(A,B,C,ncol=3,nrow=1,legend = 'bottom')
+B
 
 ```
 
 
- 
 
 ## References
 
